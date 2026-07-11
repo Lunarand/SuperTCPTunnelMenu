@@ -44,20 +44,22 @@ function Check-LocalService {
     }
 }
 
-# 4. Extract URL from logs
+# 4. Extract URL from logs and display beautifully
 function Wait-ForUrl {
     param([string]$LogFile)
-    Write-Host -NoNewline "Requesting tunnel URL from Cloudflare..."
+    Write-Host "Requesting tunnel URL from Cloudflare..." -NoNewline
     for ($i = 0; $i -lt 15; $i++) {
         if (Test-Path $LogFile) {
             $match = Select-String -Path $LogFile -Pattern 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' | Select-Object -First 1
             if ($match) {
-                Write-Host "`nSuccess! Your URL is: " -ForegroundColor Green -NoNewline
-                Write-Host $match.Matches.Value -ForegroundColor Cyan
+                Write-Host "`n`n*******************************************************" -ForegroundColor Green
+                Write-Host " SUCCESS! Your URL is ready:" -ForegroundColor Green
+                Write-Host " $($match.Matches.Value)" -ForegroundColor Cyan
+                Write-Host "*******************************************************`n" -ForegroundColor Green
                 return
             }
         }
-        Write-Host -NoNewline "."
+        Write-Host "." -NoNewline
         Start-Sleep -Seconds 1
     }
     Write-Host "`nTimeout: Could not retrieve URL. Check logs at $LogFile" -ForegroundColor Red
@@ -82,8 +84,8 @@ while ($true) {
     Write-Host "`n========================================" -ForegroundColor Cyan
     Write-Host "           SuperTCPTunnelMenu           " -ForegroundColor Green
     Write-Host "========================================" -ForegroundColor Cyan
-    Write-Host "1) Start trycloudflare (Foreground)"
-    Write-Host "2) Start trycloudflare (Background)"
+    Write-Host "1) Start trycloudflare (Foreground with Logs)"
+    Write-Host "2) Start trycloudflare (Background Silent)"
     Write-Host "3) Stop a Background Tunnel"
     Write-Host "4) List Active Tunnels"
     Write-Host "5) Exit"
@@ -94,8 +96,41 @@ while ($true) {
         '1' {
             $port = Get-ValidPort
             if (-not (Check-LocalService -Port $port)) { continue }
-            Write-Host "Starting tunnel on port $port. Press Ctrl+C to stop." -ForegroundColor Yellow
-            & $cfExe tunnel --url http://localhost:$port
+            
+            $logFile = "$TrackDir\foreground_$port.log"
+            
+            # Start process silently first to capture the URL cleanly
+            $process = Start-Process -FilePath $cfExe -ArgumentList "tunnel --url http://localhost:$port" -WindowStyle Hidden -RedirectStandardError $logFile -RedirectStandardOutput $logFile -PassThru
+            
+            Wait-ForUrl -LogFile $logFile
+            
+            Write-Host "[ TIP: Hold 'Ctrl' and click the blue link above to open it in your browser! ]`n" -ForegroundColor Magenta
+            Write-Host "Streaming live logs... (Press ANY KEY to stop the tunnel and return to menu)`n" -ForegroundColor Yellow
+            
+            # Stream the logs manually so we can intercept any key press to exit safely
+            $fileStream = [System.IO.FileStream]::new($logFile, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+            $streamReader = [System.IO.StreamReader]::new($fileStream)
+            
+            # Clear any accidental key presses from the buffer
+            while ($Host.UI.RawUI.KeyAvailable) { $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") | Out-Null }
+            
+            while (-not $Host.UI.RawUI.KeyAvailable) {
+                if (-not $streamReader.EndOfStream) {
+                    Write-Host $streamReader.ReadLine() -ForegroundColor DarkGray
+                } else {
+                    Start-Sleep -Milliseconds 100
+                }
+            }
+            
+            # Clean up process and file
+            $streamReader.Close()
+            $fileStream.Close()
+            Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+            Remove-Item $logFile -Force -ErrorAction SilentlyContinue
+            
+            # Consume the key press so it doesn't leak into the menu
+            $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") | Out-Null
+            Write-Host "`nForeground tunnel stopped safely." -ForegroundColor Green
         }
         '2' {
             $port = Get-ValidPort
@@ -108,11 +143,11 @@ while ($true) {
             $logFile = "$TrackDir\$port.log"
             $pidFile = "$TrackDir\$port.pid"
             
-            # Run in background and pipe errors/output to log
-            $process = Start-Process -FilePath $cfExe -ArgumentList "tunnel --url http://localhost:$port" -NoNewWindow -RedirectStandardError $logFile -RedirectStandardOutput $logFile -PassThru
+            $process = Start-Process -FilePath $cfExe -ArgumentList "tunnel --url http://localhost:$port" -WindowStyle Hidden -RedirectStandardError $logFile -RedirectStandardOutput $logFile -PassThru
             $process.Id | Out-File -FilePath $pidFile -Encoding ASCII
             
             Wait-ForUrl -LogFile $logFile
+            Write-Host "[ TIP: Hold 'Ctrl' and click the blue link above to open it! ]`n" -ForegroundColor Magenta
         }
         '3' {
             $pids = Get-ChildItem -Path $TrackDir -Filter "*.pid"
