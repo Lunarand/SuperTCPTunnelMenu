@@ -72,8 +72,7 @@ function Cleanup-DeadTunnels {
         $process = Get-Process -Id $pidValue -ErrorAction SilentlyContinue
         if (-not $process -or $process.ProcessName -notmatch "cloudflared") {
             $port = $_.BaseName
-            Remove-Item "$TrackDir\$port.pid" -Force -ErrorAction SilentlyContinue
-            Remove-Item "$TrackDir\$port.log" -Force -ErrorAction SilentlyContinue
+            Remove-Item "$TrackDir\$port.*" -Force -ErrorAction SilentlyContinue
         }
     }
 }
@@ -98,9 +97,10 @@ while ($true) {
             if (-not (Check-LocalService -Port $port)) { continue }
             
             $logFile = "$TrackDir\foreground_$port.log"
+            $outFile = "$TrackDir\foreground_$port.out"
             
-            # Start process silently first to capture the URL cleanly
-            $process = Start-Process -FilePath $cfExe -ArgumentList "tunnel --url http://localhost:$port" -WindowStyle Hidden -RedirectStandardError $logFile -RedirectStandardOutput $logFile -PassThru
+            # Use separate files for Output and Error to prevent file locking
+            $process = Start-Process -FilePath $cfExe -ArgumentList "tunnel --url http://localhost:$port" -WindowStyle Hidden -RedirectStandardError $logFile -RedirectStandardOutput $outFile -PassThru
             
             Wait-ForUrl -LogFile $logFile
             
@@ -122,11 +122,12 @@ while ($true) {
                 }
             }
             
-            # Clean up process and file
+            # Clean up process and files
             $streamReader.Close()
             $fileStream.Close()
             Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
             Remove-Item $logFile -Force -ErrorAction SilentlyContinue
+            Remove-Item $outFile -Force -ErrorAction SilentlyContinue
             
             # Consume the key press so it doesn't leak into the menu
             $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") | Out-Null
@@ -141,9 +142,10 @@ while ($true) {
             if (-not (Check-LocalService -Port $port)) { continue }
 
             $logFile = "$TrackDir\$port.log"
+            $outFile = "$TrackDir\$port.out"
             $pidFile = "$TrackDir\$port.pid"
             
-            $process = Start-Process -FilePath $cfExe -ArgumentList "tunnel --url http://localhost:$port" -WindowStyle Hidden -RedirectStandardError $logFile -RedirectStandardOutput $logFile -PassThru
+            $process = Start-Process -FilePath $cfExe -ArgumentList "tunnel --url http://localhost:$port" -WindowStyle Hidden -RedirectStandardError $logFile -RedirectStandardOutput $outFile -PassThru
             $process.Id | Out-File -FilePath $pidFile -Encoding ASCII
             
             Wait-ForUrl -LogFile $logFile
@@ -163,15 +165,13 @@ while ($true) {
                 $pids | ForEach-Object {
                     $p = Get-Content $_.FullName
                     Stop-Process -Id $p -Force -ErrorAction SilentlyContinue
-                    Remove-Item $_.FullName -Force
-                    Remove-Item "$TrackDir\$($_.BaseName).log" -Force -ErrorAction SilentlyContinue
+                    Remove-Item "$TrackDir\$($_.BaseName).*" -Force -ErrorAction SilentlyContinue
                 }
                 Write-Host "All background tunnels stopped." -ForegroundColor Green
             } elseif (Test-Path "$TrackDir\$stopPort.pid") {
                 $p = Get-Content "$TrackDir\$stopPort.pid"
                 Stop-Process -Id $p -Force -ErrorAction SilentlyContinue
-                Remove-Item "$TrackDir\$stopPort.pid" -Force
-                Remove-Item "$TrackDir\$stopPort.log" -Force -ErrorAction SilentlyContinue
+                Remove-Item "$TrackDir\$stopPort.*" -Force -ErrorAction SilentlyContinue
                 Write-Host "Tunnel on port $stopPort stopped." -ForegroundColor Green
             } else {
                 Write-Host "No active tunnel found for port $stopPort." -ForegroundColor Red
